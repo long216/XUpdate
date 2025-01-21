@@ -16,8 +16,15 @@
 
 package com.xuexiang.xupdate.proxy.impl;
 
-import androidx.annotation.NonNull;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_JSON_EMPTY;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_NET_REQUEST;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_NO_NEW_VERSION;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_PARSE;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_UPDATING;
+
 import android.text.TextUtils;
+
+import androidx.annotation.NonNull;
 
 import com.xuexiang.xupdate._XUpdate;
 import com.xuexiang.xupdate.entity.UpdateEntity;
@@ -25,15 +32,9 @@ import com.xuexiang.xupdate.listener.IUpdateParseCallback;
 import com.xuexiang.xupdate.proxy.IUpdateChecker;
 import com.xuexiang.xupdate.proxy.IUpdateHttpService;
 import com.xuexiang.xupdate.proxy.IUpdateProxy;
-import com.xuexiang.xupdate.service.DownloadService;
 import com.xuexiang.xupdate.utils.UpdateUtils;
 
 import java.util.Map;
-
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_JSON_EMPTY;
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_NET_REQUEST;
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_PARSE;
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_UPDATING;
 
 /**
  * 默认版本更新检查者
@@ -49,35 +50,37 @@ public class DefaultUpdateChecker implements IUpdateChecker {
     }
 
     @Override
-    public void checkVersion(boolean isGet, @NonNull String url, @NonNull Map<String, Object> params, final @NonNull IUpdateProxy updateProxy) {
-        if (DownloadService.isRunning() || _XUpdate.isShowUpdatePrompter()) {
+    public void checkVersion(boolean isGet, @NonNull final String url, @NonNull Map<String, Object> params, final @NonNull IUpdateProxy updateProxy) {
+        if (_XUpdate.isAppUpdating(url)) {
             updateProxy.onAfterCheck();
             _XUpdate.onUpdateError(CHECK_UPDATING);
             return;
         }
 
+        _XUpdate.setCheckUrlStatus(url, true);
+
         if (isGet) {
             updateProxy.getIUpdateHttpService().asyncGet(url, params, new IUpdateHttpService.Callback() {
                 @Override
                 public void onSuccess(String result) {
-                    onCheckSuccess(result, updateProxy);
+                    onCheckSuccess(url, result, updateProxy);
                 }
 
                 @Override
                 public void onError(Throwable error) {
-                    onCheckError(updateProxy, error);
+                    onCheckError(url, updateProxy, error);
                 }
             });
         } else {
             updateProxy.getIUpdateHttpService().asyncPost(url, params, new IUpdateHttpService.Callback() {
                 @Override
                 public void onSuccess(String result) {
-                    onCheckSuccess(result, updateProxy);
+                    onCheckSuccess(url, result, updateProxy);
                 }
 
                 @Override
                 public void onError(Throwable error) {
-                    onCheckError(updateProxy, error);
+                    onCheckError(url, updateProxy, error);
                 }
             });
         }
@@ -91,10 +94,12 @@ public class DefaultUpdateChecker implements IUpdateChecker {
     /**
      * 查询成功
      *
-     * @param result
-     * @param updateProxy
+     * @param url         查询地址
+     * @param result      查询结果
+     * @param updateProxy 更新代理
      */
-    private void onCheckSuccess(String result, @NonNull IUpdateProxy updateProxy) {
+    private void onCheckSuccess(String url, String result, @NonNull IUpdateProxy updateProxy) {
+        _XUpdate.setCheckUrlStatus(url, false);
         updateProxy.onAfterCheck();
         if (!TextUtils.isEmpty(result)) {
             processCheckResult(result, updateProxy);
@@ -106,10 +111,12 @@ public class DefaultUpdateChecker implements IUpdateChecker {
     /**
      * 查询失败
      *
-     * @param updateProxy
-     * @param error
+     * @param url         查询地址
+     * @param updateProxy 更新代理
+     * @param error       错误
      */
-    private void onCheckError(@NonNull IUpdateProxy updateProxy, Throwable error) {
+    private void onCheckError(String url, @NonNull IUpdateProxy updateProxy, Throwable error) {
+        _XUpdate.setCheckUrlStatus(url, false);
         updateProxy.onAfterCheck();
         _XUpdate.onUpdateError(CHECK_NET_REQUEST, error.getMessage());
     }
@@ -140,5 +147,8 @@ public class DefaultUpdateChecker implements IUpdateChecker {
         }
     }
 
-
+    @Override
+    public void noNewVersion(Throwable throwable) {
+        _XUpdate.onUpdateError(CHECK_NO_NEW_VERSION, throwable != null ? throwable.getMessage() : null);
+    }
 }

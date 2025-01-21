@@ -16,9 +16,15 @@
 
 package com.xuexiang.xupdate.utils;
 
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_APK_CACHE_DIR_EMPTY;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_IGNORED_VERSION;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_PARSE;
+
 import android.annotation.SuppressLint;
 import android.app.ActivityManager;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -30,27 +36,21 @@ import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.os.Environment;
-
-import androidx.annotation.NonNull;
-
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 
-import com.google.gson.Gson;
-import com.google.gson.JsonParseException;
+import androidx.annotation.NonNull;
+
 import com.xuexiang.xupdate.R;
 import com.xuexiang.xupdate.XUpdate;
 import com.xuexiang.xupdate._XUpdate;
 import com.xuexiang.xupdate.entity.UpdateEntity;
+import com.xuexiang.xupdate.logs.UpdateLog;
 import com.xuexiang.xupdate.proxy.IUpdateProxy;
 
 import java.io.File;
 import java.util.List;
-
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_APK_CACHE_DIR_EMPTY;
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_IGNORED_VERSION;
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_NO_NEW_VERSION;
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.CHECK_PARSE;
 
 /**
  * 更新工具类
@@ -82,7 +82,7 @@ public final class UpdateUtils {
         if (updateEntity != null) {
             if (updateEntity.isHasUpdate()) {
                 //校验是否是已忽略版本
-                if (UpdateUtils.isIgnoreVersion(updateProxy.getContext(), updateEntity.getVersionName())) {
+                if (updateEntity.isIgnorable() && UpdateUtils.isIgnoreVersion(updateProxy.getContext(), updateEntity.getVersionName())) {
                     _XUpdate.onUpdateError(CHECK_IGNORED_VERSION);
                     //校验apk下载缓存目录是否为空
                 } else if (TextUtils.isEmpty(updateEntity.getApkCacheDir())) {
@@ -91,7 +91,8 @@ public final class UpdateUtils {
                     updateProxy.findNewVersion(updateEntity, updateProxy);
                 }
             } else {
-                _XUpdate.onUpdateError(CHECK_NO_NEW_VERSION);
+                UpdateLog.i("未发现新版本, 解析后的版本更新信息如下:" + updateEntity);
+                updateProxy.noNewVersion(null);
             }
         } else {
             _XUpdate.onUpdateError(CHECK_PARSE, "json:" + result);
@@ -189,33 +190,8 @@ public final class UpdateUtils {
         return diff;
     }
 
-    /**
-     * 把 JSON 字符串 转换为 单个指定类型的对象
-     *
-     * @param json     包含了单个对象数据的JSON字符串
-     * @param classOfT 指定类型对象的Class
-     * @return 指定类型对象
-     */
-    public static <T> T fromJson(String json, Class<T> classOfT) {
-        try {
-            return new Gson().fromJson(json, classOfT);
-        } catch (JsonParseException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
-
-    /**
-     * 把 单个指定类型的对象 转换为 JSON 字符串
-     *
-     * @param src
-     * @return
-     */
-    public static String toJson(Object src) {
-        return new Gson().toJson(src);
-    }
-
     //=============显示====================//
+
     public static int dip2px(int dip, Context context) {
         return (int) (dip * getDensity(context) + 0.5f);
     }
@@ -267,8 +243,8 @@ public final class UpdateUtils {
     /**
      * 保存忽略的版本信息
      *
-     * @param context
-     * @param newVersion
+     * @param context 上下文
+     * @param newVersion 新版本
      */
     public static void saveIgnoreVersion(Context context, String newVersion) {
         getSP(context).edit().putString(IGNORE_VERSION, newVersion).apply();
@@ -277,9 +253,9 @@ public final class UpdateUtils {
     /**
      * 是否是忽略版本
      *
-     * @param context
-     * @param newVersion
-     * @return
+     * @param context 上下文
+     * @param newVersion 新版本
+     * @return 是否是忽略版本
      */
     public static boolean isIgnoreVersion(Context context, String newVersion) {
         return getSP(context).getString(IGNORE_VERSION, "").equals(newVersion);
@@ -448,8 +424,9 @@ public final class UpdateUtils {
         ActivityManager activityManager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
         String packageName = context.getPackageName();
         List<ActivityManager.RunningAppProcessInfo> appProcesses = activityManager.getRunningAppProcesses();
-        if (appProcesses == null)
+        if (appProcesses == null) {
             return false;
+        }
         for (ActivityManager.RunningAppProcessInfo appProcess : appProcesses) {
             if (appProcess.processName.equals(packageName) && appProcess.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
                 return true;
@@ -458,4 +435,37 @@ public final class UpdateUtils {
         return false;
     }
 
+    /**
+     * 是否是主线程
+     *
+     * @return 是否是主线程
+     */
+    public static boolean isMainThread() {
+        return Looper.getMainLooper() == Looper.myLooper();
+    }
+
+    /**
+     * 页面跳转
+     *
+     * @param intent 跳转意图
+     */
+    public static boolean startActivity(final Intent intent) {
+        if (intent == null) {
+            UpdateLog.e("[startActivity failed]: intent == null");
+            return false;
+        }
+        if (XUpdate.getContext().getPackageManager().resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY) != null) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                XUpdate.getContext().startActivity(intent);
+                return true;
+            } catch (ActivityNotFoundException e) {
+                e.printStackTrace();
+                UpdateLog.e(e);
+            }
+        } else {
+            UpdateLog.e("[resolveActivity failed]: " + (intent.getComponent() != null ? intent.getComponent().getClassName() : intent.getAction()) + " do not register in manifest");
+        }
+        return false;
+    }
 }

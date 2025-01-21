@@ -16,6 +16,8 @@
 
 package com.xuexiang.xupdate.listener.impl;
 
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.INSTALL_FAILED;
+
 import android.content.Context;
 
 import androidx.annotation.NonNull;
@@ -27,8 +29,6 @@ import com.xuexiang.xupdate.utils.ApkInstallUtils;
 
 import java.io.File;
 import java.io.IOException;
-
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.INSTALL_FAILED;
 
 /**
  * 默认的apk安装监听【自定义安装监听可继承该类，并重写相应的方法】
@@ -43,7 +43,7 @@ public class DefaultInstallListener implements OnInstallListener {
         if (checkApkFile(downloadEntity, apkFile)) {
             return installApkFile(context, apkFile);
         } else {
-            _XUpdate.onUpdateError(INSTALL_FAILED, "apk文件校验不通过！");
+            _XUpdate.onUpdateError(INSTALL_FAILED, "Apk file verify failed, please check whether the MD5 value you set is correct！");
             return false;
         }
     }
@@ -53,7 +53,7 @@ public class DefaultInstallListener implements OnInstallListener {
      *
      * @param downloadEntity 下载信息实体
      * @param apkFile        apk文件
-     * @return
+     * @return apk文件是否有效
      */
     protected boolean checkApkFile(DownloadEntity downloadEntity, @NonNull File apkFile) {
         return downloadEntity != null && downloadEntity.isApkFileValid(apkFile);
@@ -62,15 +62,15 @@ public class DefaultInstallListener implements OnInstallListener {
     /**
      * 安装apk文件【此处可自定义apk的安装方法,可重写该方法】
      *
-     * @param context
-     * @param apkFile
-     * @return
+     * @param context 上下文
+     * @param apkFile apk文件
+     * @return 是否安装成功
      */
     protected boolean installApkFile(Context context, File apkFile) {
         try {
             return ApkInstallUtils.install(context, apkFile);
         } catch (IOException e) {
-            _XUpdate.onUpdateError(INSTALL_FAILED, "获取apk的路径出错！");
+            _XUpdate.onUpdateError(INSTALL_FAILED, "An error occurred while install apk:" + e.getMessage());
         }
         return false;
     }

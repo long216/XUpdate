@@ -16,6 +16,10 @@
 
 package com.xuexiang.xupdate.service;
 
+import static android.app.PendingIntent.FLAG_IMMUTABLE;
+import static android.app.PendingIntent.FLAG_UPDATE_CURRENT;
+import static com.xuexiang.xupdate.entity.UpdateError.ERROR.DOWNLOAD_FAILED;
+
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -25,12 +29,16 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Binder;
+import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.text.TextUtils;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 
 import com.xuexiang.xupdate.R;
 import com.xuexiang.xupdate.XUpdate;
@@ -45,8 +53,6 @@ import com.xuexiang.xupdate.utils.UpdateUtils;
 
 import java.io.File;
 
-import static com.xuexiang.xupdate.entity.UpdateError.ERROR.DOWNLOAD_FAILED;
-
 /**
  * APK下载服务
  *
@@ -57,12 +63,12 @@ public class DownloadService extends Service {
 
     private static final int DOWNLOAD_NOTIFY_ID = 1000;
 
-    private static boolean mIsRunning = false;
+    private static boolean sIsRunning = false;
 
     private static final String CHANNEL_ID = "xupdate_channel_id";
     private static final CharSequence CHANNEL_NAME = "xupdate_channel_name";
 
-    private NotificationManager mNotificationManager;
+    private NotificationManagerCompat mNotificationManager;
     private NotificationCompat.Builder mBuilder;
 
     //=====================绑定服务============================//
@@ -70,13 +76,13 @@ public class DownloadService extends Service {
     /**
      * 绑定服务
      *
-     * @param connection
+     * @param connection 服务连接
      */
     public static void bindService(ServiceConnection connection) {
         Intent intent = new Intent(XUpdate.getContext(), DownloadService.class);
         XUpdate.getContext().startService(intent);
         XUpdate.getContext().bindService(intent, connection, Context.BIND_AUTO_CREATE);
-        mIsRunning = true;
+        sIsRunning = true;
     }
 
     /**
@@ -99,7 +105,7 @@ public class DownloadService extends Service {
      * 关闭服务
      */
     private void close() {
-        mIsRunning = false;
+        sIsRunning = false;
         stopSelf();
     }
 
@@ -108,28 +114,28 @@ public class DownloadService extends Service {
     /**
      * 下载服务是否在运行
      *
-     * @return
+     * @return 是否在运行
      */
     public static boolean isRunning() {
-        return mIsRunning;
+        return sIsRunning;
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
-        mNotificationManager = (NotificationManager) getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+        mNotificationManager = NotificationManagerCompat.from(this);
     }
 
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
-        mIsRunning = true;
+        sIsRunning = true;
         return new DownloadBinder();
     }
 
     @Override
     public boolean onUnbind(Intent intent) {
-        mIsRunning = false;
+        sIsRunning = false;
         return super.onUnbind(intent);
     }
 
@@ -157,7 +163,7 @@ public class DownloadService extends Service {
      * 初始化通知
      */
     private void initNotification() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH);
             //设置绕过免打扰模式
 //            channel.setBypassDnd(false);
@@ -170,7 +176,6 @@ public class DownloadService extends Service {
 //            channel.setVibrationPattern(new long[]{100, 200, 300, 400, 500, 400, 300, 200, 400});
             channel.enableVibration(false);
             channel.enableLights(false);
-
             mNotificationManager.createNotificationChannel(channel);
         }
 
@@ -192,7 +197,8 @@ public class DownloadService extends Service {
     /**
      * DownloadBinder中定义了一些实用的方法
      *
-     * @author user
+     * @author xuexiang
+     * @since 2021/1/24 1:59 AM
      */
     public class DownloadBinder extends Binder {
 
@@ -222,7 +228,11 @@ public class DownloadService extends Service {
                 mFileDownloadCallBack.onCancel();
                 mFileDownloadCallBack = null;
             }
-            mUpdateEntity.getIUpdateHttpService().cancelDownload(mUpdateEntity.getDownloadUrl());
+            if (mUpdateEntity.getIUpdateHttpService() != null) {
+                mUpdateEntity.getIUpdateHttpService().cancelDownload(mUpdateEntity.getDownloadUrl());
+            } else {
+                UpdateLog.e("cancelDownload failed, mUpdateEntity.getIUpdateHttpService() is null!");
+            }
             DownloadService.this.stop(msg);
         }
 
@@ -263,9 +273,12 @@ public class DownloadService extends Service {
         String target = apkCacheDir + File.separator + updateEntity.getVersionName();
 
         UpdateLog.d("开始下载更新文件, 下载地址:" + apkUrl + ", 保存路径:" + target + ", 文件名:" + apkName);
-        updateEntity.getIUpdateHttpService().download(apkUrl, target, apkName, fileDownloadCallBack);
+        if (updateEntity.getIUpdateHttpService() != null) {
+            updateEntity.getIUpdateHttpService().download(apkUrl, target, apkName, fileDownloadCallBack);
+        } else {
+            UpdateLog.e("startDownload failed, updateEntity.getIUpdateHttpService() is null!");
+        }
     }
-
 
     /**
      * 文件下载处理
@@ -281,16 +294,19 @@ public class DownloadService extends Service {
         /**
          * 是否下载完成后自动安装
          */
-        private boolean mIsAutoInstall;
+        private final boolean mIsAutoInstall;
 
         private int mOldRate = 0;
 
         private boolean mIsCancel;
 
+        private final Handler mMainHandler;
+
         FileDownloadCallBack(@NonNull UpdateEntity updateEntity, @Nullable OnFileDownloadListener listener) {
             mDownloadEntity = updateEntity.getDownLoadEntity();
             mIsAutoInstall = updateEntity.isAutoInstall();
             mOnFileDownloadListener = listener;
+            mMainHandler = new Handler(Looper.getMainLooper());
         }
 
         @Override
@@ -305,8 +321,23 @@ public class DownloadService extends Service {
 
             //初始化通知栏
             setUpNotification(mDownloadEntity);
-            if (mOnFileDownloadListener != null) {
-                mOnFileDownloadListener.onStart();
+            dispatchOnStart();
+        }
+
+        private void dispatchOnStart() {
+            if (UpdateUtils.isMainThread()) {
+                if (mOnFileDownloadListener != null) {
+                    mOnFileDownloadListener.onStart();
+                }
+            } else {
+                mMainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (mOnFileDownloadListener != null) {
+                            mOnFileDownloadListener.onStart();
+                        }
+                    }
+                });
             }
         }
 
@@ -316,12 +347,10 @@ public class DownloadService extends Service {
                 return;
             }
 
-            //做一下判断，防止自回调过于频繁，造成更新通知栏进度过于频繁，而出现卡顿的问题。
             int rate = Math.round(progress * 100);
-            if (mOldRate != rate) {
-                if (mOnFileDownloadListener != null) {
-                    mOnFileDownloadListener.onProgress(progress, total);
-                }
+            //做一下判断，防止自回调过于频繁，造成更新通知栏进度过于频繁，而出现卡顿的问题。
+            if (canRefreshProgress(rate)) {
+                dispatchOnProgress(progress, total);
 
                 if (mBuilder != null) {
                     mBuilder.setContentTitle(getString(R.string.xupdate_lab_downloading) + UpdateUtils.getAppName(DownloadService.this))
@@ -337,8 +366,55 @@ public class DownloadService extends Service {
             }
         }
 
+        /**
+         * 是否可以刷新进度
+         *
+         * @param newRate 最新进度
+         * @return 是否可以刷新进度
+         */
+        private boolean canRefreshProgress(int newRate) {
+            if (mBuilder != null) {
+                // 系统通知栏对单个应用通知队列通长度进行了限制。
+                // notify方法会将Notification加入系统的通知队列，当前应用发出的Notification数量超过50时，不再继续向系统的通知队列添加Notification，即造成了notificationManagerCompat.notify(TAG, NOTIFY_ID, notify)无效的现象。
+                return Math.abs(newRate - mOldRate) >= 4;
+            } else {
+                return Math.abs(newRate - mOldRate) >= 1;
+            }
+        }
+
+
+        private void dispatchOnProgress(final float progress, final long total) {
+            if (UpdateUtils.isMainThread()) {
+                if (mOnFileDownloadListener != null) {
+                    mOnFileDownloadListener.onProgress(progress, total);
+                }
+            } else {
+                mMainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (mOnFileDownloadListener != null) {
+                            mOnFileDownloadListener.onProgress(progress, total);
+                        }
+                    }
+                });
+            }
+        }
+
         @Override
-        public void onSuccess(File file) {
+        public void onSuccess(final File file) {
+            if (UpdateUtils.isMainThread()) {
+                handleOnSuccess(file);
+            } else {
+                mMainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        handleOnSuccess(file);
+                    }
+                });
+            }
+        }
+
+        private void handleOnSuccess(File file) {
             if (mIsCancel) {
                 return;
             }
@@ -363,13 +439,11 @@ public class DownloadService extends Service {
                 } else {
                     showDownloadCompleteNotification(file);
                 }
-                //下载完自杀
-                close();
             } catch (Exception e) {
                 e.printStackTrace();
-            } finally {
-                close();
             }
+            //下载完自杀
+            close();
         }
 
         @Override
@@ -378,16 +452,32 @@ public class DownloadService extends Service {
                 return;
             }
 
-            _XUpdate.onUpdateError(DOWNLOAD_FAILED, throwable.getMessage());
+            _XUpdate.onUpdateError(DOWNLOAD_FAILED, throwable != null ? throwable.getMessage() : "unknown error!");
             //App前台运行
-            if (mOnFileDownloadListener != null) {
-                mOnFileDownloadListener.onError(throwable);
-            }
+            dispatchOnError(throwable);
             try {
                 mNotificationManager.cancel(DOWNLOAD_NOTIFY_ID);
                 close();
             } catch (Exception e) {
                 e.printStackTrace();
+            }
+        }
+
+
+        private void dispatchOnError(final Throwable throwable) {
+            if (UpdateUtils.isMainThread()) {
+                if (mOnFileDownloadListener != null) {
+                    mOnFileDownloadListener.onError(throwable);
+                }
+            } else {
+                mMainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (mOnFileDownloadListener != null) {
+                            mOnFileDownloadListener.onError(throwable);
+                        }
+                    }
+                });
             }
         }
 
@@ -404,7 +494,7 @@ public class DownloadService extends Service {
         //App后台运行
         //更新参数,注意flags要使用FLAG_UPDATE_CURRENT
         Intent installAppIntent = ApkInstallUtils.getInstallAppIntent(file);
-        PendingIntent contentIntent = PendingIntent.getActivity(DownloadService.this, 0, installAppIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent contentIntent = PendingIntent.getActivity(DownloadService.this, 0, installAppIntent, FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE);
         if (mBuilder == null) {
             mBuilder = getNotificationBuilder();
         }
